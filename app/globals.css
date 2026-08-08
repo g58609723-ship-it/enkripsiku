@@ -1,0 +1,68 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  background: #0d0d0d;
+  color: #00ff41;
+  font-family: 'Press Start 2P', 'Courier New', monospace;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* CRT Scanlines */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0,0,0,0.15),
+    rgba(0,0,0,0.15) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+  z-index: 9999;
+}
+
+/* Scrollbar Retro */
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0a0a;
+  border-left: 2px solid #333;
+}
+::-webkit-scrollbar-thumb {
+  background: #00ff41;
+  border: 2px solid #0d0d0d;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #ff00ff;
+}
+
+::selection {
+  background: #ff00ff;
+  color: #fff;
+}
+
+/* Auth input reuse */
+.auth-input {
+  width: 100%;
+  background: #0a0a0a;
+  border: 2px solid #333;
+  color: #00ff41;
+  padding: 10px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  outline: none;
+}
+.auth-input:focus {
+  border-color: #00ff41;
+  box-shadow: 0 0 8px #00ff4133;
+}

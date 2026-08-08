@@ -1,0 +1,418 @@
+import * as acorn from "acorn";
+import * as escodegen from "escodegen";
+
+// ============================================
+// IDENTIFIER SOURCE — ALL CUSTOM NAMES PRESERVED
+// ============================================
+export const IDENTIFIER_SOURCE: Record<string, string> = {
+  obf:
+    "/*Encrypted^~^/*^/*($break)*/" +
+    "/*Encrypted^~^/*^/*($break)*/",
+
+  enchard:
+    "/*Pprimrosereyy:D/*^/*($break)*/" +
+    "/*Pprimrosereyy:D/*^/*($break)*/",
+
+  encbreak:
+    "/*($break)/*^/*($break)*/" +
+    "/*($break)/*^/*($break)*/",
+
+  invisibleenc: "/*\u2000*/\u2000",
+
+  encnull: "/*null/*^/*null*/" + "/*null*/",
+
+  encvar:
+    "/*var = [ undefinded ]/*^/*($break)*/" +
+    "/*var = [ undefinded ]/*^/*($break)*/",
+
+  encundf:
+    "/*undefined_at_line_9999/*^/*($break)*/" +
+    "/*undefined_at_line_9999/*^/*($break)*/",
+
+  encnan:
+    "/*NaN/*^/*($break)*/" +
+    "/*NaN/*^/*($break)*/",
+
+  enctostring:
+    "/*tosring/*^/*($break)*/" +
+    "/*tosring/*^/*($break)*/",
+
+  encquery:
+    "/*q/*^/*($break)*/" +
+    "/*q/*^/*($break)*/",
+
+  customname: "/*CUSTOM/*^/*($break)*/",
+};
+
+function b64(s: string): string {
+  return Buffer.from(s).toString("base64");
+}
+
+export function identifierGeneratorFactory(mode: string, customName?: string) {
+  const originalString = customName || IDENTIFIER_SOURCE[mode] || "encrypted";
+
+  function clean(str: string) {
+    return str.replace(/[^a-zA-Z0-9_$]/g, "").slice(0, 20) || "encrypted";
+  }
+
+  function rand(len: number) {
+    const c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let r = "";
+    for (let i = 0; i < len; i++) {
+      r += c[Math.floor(Math.random() * c.length)];
+    }
+    return r;
+  }
+
+  return () => clean(originalString) + rand(3);
+}
+
+const RUNTIME_BASE64 = `function _rx(b){return Buffer.from(b,"base64").toString()}
+const /*null/*^/*null*//*null*/GA=(m)=>require(m);
+function _rx(b){return Buffer.from(b,_rx("YmFzZTY0")).toString()}
+const /*null/*^/*null*//*null*/GA=(m)=>require(m);`;
+
+// ============================================
+// TRANSFORM ALL STRINGS & REGEX — OLD METHOD
+// ============================================
+export function transformAllStringsAndRegex(code: string): string {
+  const ast = acorn.parse(code, {
+    ecmaVersion: "latest",
+    sourceType: "script",
+    allowReturnOutsideFunction: true,
+  });
+
+  const skipNodes = new Set<any>();
+  const first = ast.body[0] as any;
+  
+  if (first?.expression?.value === "use strict") {
+    skipNodes.add(first.expression);
+  }
+
+  // Mark import sources to skip
+  function markSkips(node: any) {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "ImportDeclaration" && node.source) {
+      skipNodes.add(node.source);
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) child.forEach(markSkips);
+      else if (child && typeof child === "object") markSkips(child);
+    }
+  }
+  markSkips(ast);
+
+  function walkNode(node: any) {
+    if (!node || typeof node !== "object") return;
+
+    // TemplateLiteral → _rx() calls
+    if (node.type === "TemplateLiteral") {
+      if (node.expressions.length === 0) {
+        const cooked = node.quasis[0].value.cooked;
+        node.type = "CallExpression";
+        node.callee = { type: "Identifier", name: "_rx" };
+        node.arguments = [{
+          type: "Literal",
+          value: b64(cooked),
+          raw: `"${b64(cooked)}"`,
+        }];
+        delete node.quasis;
+        delete node.expressions;
+      } else {
+        let expr: any = null;
+        node.quasis.forEach((q: any, i: number) => {
+          const text = q.value.cooked;
+          if (text) {
+            const call = {
+              type: "CallExpression",
+              callee: { type: "Identifier", name: "_rx" },
+              arguments: [{
+                type: "Literal",
+                value: b64(text),
+                raw: `"${b64(text)}"`,
+              }],
+            };
+            expr = expr
+              ? { type: "BinaryExpression", operator: "+", left: expr, right: call }
+              : call;
+          }
+          if (node.expressions[i]) {
+            expr = expr
+              ? { type: "BinaryExpression", operator: "+", left: expr, right: node.expressions[i] }
+              : node.expressions[i];
+          }
+        });
+        Object.assign(node, expr);
+      }
+      return;
+    }
+
+    // Literal strings & regex
+    if (node.type === "Literal" && !skipNodes.has(node)) {
+      if (node.regex) {
+        node.type = "NewExpression";
+        node.callee = { type: "Identifier", name: "RegExp" };
+        node.arguments = [
+          {
+            type: "CallExpression",
+            callee: { type: "Identifier", name: "_rx" },
+            arguments: [{
+              type: "Literal",
+              value: b64(node.regex.pattern),
+              raw: `"${b64(node.regex.pattern)}"`,
+            }],
+          },
+          node.regex.flags
+            ? { type: "Literal", value: node.regex.flags }
+            : null,
+        ].filter(Boolean);
+        delete node.regex;
+        delete node.value;
+        delete node.raw;
+        return;
+      }
+
+      if (typeof node.value === "string") {
+        node.type = "CallExpression";
+        node.callee = { type: "Identifier", name: "_rx" };
+        node.arguments = [{
+          type: "Literal",
+          value: b64(node.value),
+          raw: `"${b64(node.value)}"`,
+        }];
+        delete node.value;
+        delete node.raw;
+      }
+    }
+
+    // require → _rr
+    if (
+      node.type === "CallExpression" &&
+      node.callee?.name === "require" &&
+      node.arguments[0]?.type === "Literal"
+    ) {
+      node.callee.name = "_rr";
+    }
+
+    // Recurse
+    for (const key of Object.keys(node)) {
+      if (key === "type") continue;
+      const child = node[key];
+      if (Array.isArray(child)) child.forEach(walkNode);
+      else if (child && typeof child === "object") walkNode(child);
+    }
+  }
+
+  walkNode(ast);
+
+  return RUNTIME_BASE64 + "\n" + escodegen.generate(ast, { format: { compact: true } });
+}
+
+// ============================================
+// BANNER
+// ============================================
+export function getBanner(): string {
+  return `/*
+    Encrypt By: Primrosereyy ^~^
+        My Support:
+        Than XS #BestFriend
+        Daffa #BestFriend
+        Rapli #BestFriend
+        Rapipp #BestFriend
+        Drayy #BestFriend
+
+    Contact:
+     @xberlianmine
+     bot enc:
+      @reyyobfuscation_bot
+*/
+//===== [ X ] — Primrosereyy =====//\n`;
+}
+
+// ============================================
+// CUSTOM OBFUSCATOR (NO js-confuser)
+// ============================================
+const GLOBALS = new Set([
+  "console", "require", "Buffer", "process", "module", "exports", "eval",
+  "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURI", "decodeURI",
+  "encodeURIComponent", "decodeURIComponent", "escape", "unescape",
+  "Object", "Array", "String", "Number", "Boolean", "Date", "RegExp", "Error",
+  "Math", "JSON", "Promise", "Set", "Map", "WeakSet", "WeakMap", "Symbol",
+  "ArrayBuffer", "Uint8Array", "Int8Array", "Uint16Array", "Int16Array",
+  "Uint32Array", "Int32Array", "Float32Array", "Float64Array", "DataView",
+  "Function", "Infinity", "NaN", "undefined", "_rx", "_rr",
+  "document", "window", "global", "globalThis",
+]);
+
+function collectDeclarations(node: any, mapping: Map<string, string>, idGen: () => string) {
+  if (!node || typeof node !== "object") return;
+
+  if (node.type === "VariableDeclarator" && node.id?.type === "Identifier" && !GLOBALS.has(node.id.name)) {
+    if (!mapping.has(node.id.name)) mapping.set(node.id.name, idGen());
+  }
+  if ((node.type === "FunctionDeclaration" || node.type === "FunctionExpression") && node.id?.type === "Identifier" && !GLOBALS.has(node.id.name)) {
+    if (!mapping.has(node.id.name)) mapping.set(node.id.name, idGen());
+  }
+  if (node.type === "ClassDeclaration" && node.id?.type === "Identifier" && !GLOBALS.has(node.id.name)) {
+    if (!mapping.has(node.id.name)) mapping.set(node.id.name, idGen());
+  }
+
+  for (const key of Object.keys(node)) {
+    if (key === "type") continue;
+    const child = node[key];
+    if (Array.isArray(child)) child.forEach((c) => collectDeclarations(c, mapping, idGen));
+    else if (child && typeof child === "object") collectDeclarations(child, mapping, idGen);
+  }
+}
+
+function renameAll(node: any, mapping: Map<string, string>, parent?: any) {
+  if (!node || typeof node !== "object") return;
+
+  if (node.type === "Identifier" && mapping.has(node.name)) {
+    // Don't rename MemberExpression property that is NOT computed
+    if (parent?.type === "MemberExpression" && parent.property === node && !parent.computed) {
+      // keep original
+    } else {
+      node.name = mapping.get(node.name)!;
+    }
+  }
+
+  for (const key of Object.keys(node)) {
+    if (key === "type") continue;
+    const child = node[key];
+    if (Array.isArray(child)) child.forEach((c) => renameAll(c, mapping, node));
+    else if (child && typeof child === "object") renameAll(child, mapping, node);
+  }
+}
+
+function injectDeadCode(node: any) {
+  if (!node || typeof node !== "object") return;
+
+  if (node.type === "BlockStatement" && Array.isArray(node.body)) {
+    const templates = [
+      "if(+[]===0){var _0xdead=+[];}",
+      "while(false){break;}",
+      "for(var _0xdead=0;_0xdead<0;_0xdead++){continue;}",
+      "try{throw 0;}catch(_0xdead){}",
+    ];
+    const newBody: any[] = [];
+    for (const stmt of node.body) {
+      if (Math.random() > 0.82) {
+        const junk = acorn.parse(templates[Math.floor(Math.random() * templates.length)], {
+          ecmaVersion: "latest",
+          sourceType: "script",
+        });
+        newBody.push(junk.body[0]);
+      }
+      newBody.push(stmt);
+      injectDeadCode(stmt);
+    }
+    node.body = newBody;
+  } else {
+    for (const key of Object.keys(node)) {
+      if (key === "type") continue;
+      const child = node[key];
+      if (Array.isArray(child)) child.forEach(injectDeadCode);
+      else if (child && typeof child === "object") injectDeadCode(child);
+    }
+  }
+}
+
+export async function customObfuscate(code: string, mode: string): Promise<string> {
+  // Step 1: Transform strings & regex
+  let source = transformAllStringsAndRegex(code);
+
+  // Step 2: Parse
+  const ast = acorn.parse(source, {
+    ecmaVersion: "latest",
+    sourceType: "script",
+    allowReturnOutsideFunction: true,
+  });
+
+  // Step 3: Rename identifiers
+  const idGen = identifierGeneratorFactory(mode);
+  const mapping = new Map<string, string>();
+  collectDeclarations(ast, mapping, idGen);
+  renameAll(ast, mapping);
+
+  // Step 4: Inject dead code
+  injectDeadCode(ast);
+
+  // Step 5: Generate compact code
+  const obfuscated = escodegen.generate(ast, { format: { compact: true } });
+
+  return getBanner() + obfuscated;
+}
+
+// ============================================
+// CUSTOM NAME OBFUSCATION (NEW TYPE)
+// ============================================
+export function generateCustomNameObfuscation(code: string, customName: string): string {
+  // 1. Base64 encode entire original code
+  const b64Code = Buffer.from(code).toString("base64");
+
+  // 2. Split into random chunks (2-5 chars)
+  const chunks: string[] = [];
+  let idx = 0;
+  while (idx < b64Code.length) {
+    const size = Math.floor(Math.random() * 4) + 2; // 2-5
+    chunks.push(b64Code.slice(idx, idx + size));
+    idx += size;
+  }
+
+  // 3. Build decoder (reads its own source, finds chunks by ID, assembles, eval)
+  const decoder = `
+function _rx(b){return Buffer.from(b,"base64").toString()}
+const /*q/*^/*($break)*//*q/*^/*($break)*/qP=(/*q/*^/*($break)*//*q/*^/*($break)*/wU)=>require(/*q/*^/*($break)*//*q/*^/*($break)*/wU);
+(function(){
+  var /*q/*^/*($break)*//*q/*^/*($break)*/vA=function(){
+    if(typeof document!==_rx("dW5kZWZpbmVk")&&document.currentScript){
+      return document.currentScript.text;
+    }
+    try{
+      var /*q/*^/*($break)*//*q/*^/*($break)*/cE=new Error();
+      var /*q/*^/*($break)*//*q/*^/*($break)*/mS=/*q/*^/*($break)*//*q/*^/*($break)*/cE.stack;
+      var /*q/*^/*($break)*//*q/*^/*($break)*/wU=/*q/*^/*($break)*//*q/*^/*($break)*/mS.match(new RegExp(_rx("YXQgW15cKF0qXCgoW146XSspOlxkKzpcZCtcKQ==")));
+      if(/*q/*^/*($break)*//*q/*^/*($break)*/wU)return /*q/*^/*($break)*//*q/*^/*($break)*/qP(_rx("ZnM=")).readFileSync(/*q/*^/*($break)*//*q/*^/*($break)*/wU[1],_rx("dXRmOA=="));
+      /*q/*^/*($break)*//*q/*^/*($break)*/wU=/*q/*^/*($break)*//*q/*^/*($break)*/mS.match(new RegExp(_rx("YXQgKFteOl0rKTpcZCs6XGQr")));
+      if(/*q/*^/*($break)*//*q/*^/*($break)*/wU)return /*q/*^/*($break)*//*q/*^/*($break)*/qP(_rx("ZnM=")).readFileSync(/*q/*^/*($break)*//*q/*^/*($break)*/wU[1],_rx("dXRmOA=="));
+    }catch(x){}
+    return _rx("");
+  };
+  var /*q/*^/*($break)*//*q/*^/*($break)*/QC=/*q/*^/*($break)*//*q/*^/*($break)*/vA();
+  var /*q/*^/*($break)*//*q/*^/*($break)*/vO=_rx("bmV3IFJlZ0V4cChfX1BMQUNFSE9MREVSXzJfXykqXm5ldyBSZWdFeHAoX19QTEFDRUhPTERFUl8zX18p");
+  var /*q/*^/*($break)*//*q/*^/*($break)*/ON=_rx("");
+  var /*q/*^/*($break)*//*q/*^/*($break)*/Mu=0;
+  while((/*q/*^/*($break)*//*q/*^/*($break)*/Mu=/*q/*^/*($break)*//*q/*^/*($break)*/QC.indexOf(/*q/*^/*($break)*//*q/*^/*($break)*/vO,/*q/*^/*($break)*//*q/*^/*($break)*/Mu))!==-1){
+    var /*q/*^/*($break)*//*q/*^/*($break)*/Sm=/*q/*^/*($break)*//*q/*^/*($break)*/Mu+/*q/*^/*($break)*//*q/*^/*($break)*/vO.length;
+    var /*q/*^/*($break)*//*q/*^/*($break)*/cE=/*q/*^/*($break)*//*q/*^/*($break)*/QC.indexOf(ek,/*q/*^/*($break)*//*q/*^/*($break)*/Sm);
+    if(/*q/*^/*($break)*//*q/*^/*($break)*/cE===-1)break;
+    /*q/*^/*($break)*//*q/*^/*($break)*/ON+=/*q/*^/*($break)*//*q/*^/*($break)*/QC.substring(/*q/*^/*($break)*//*q/*^/*($break)*/Sm,/*q/*^/*($break)*//*q/*^/*($break)*/cE);
+    /*q/*^/*($break)*//*q/*^/*($break)*/Mu=/*q/*^/*($break)*//*q/*^/*($break)*/cE+ek.length;
+  }
+  var /*q/*^/*($break)*//*q/*^/*($break)*/yA=Buffer.from(/*q/*^/*($break)*//*q/*^/*($break)*/ON,_rx("YmFzZTY0")).toString();
+  eval(/*q/*^/*($break)*//*q/*^/*($break)*/yA);
+})();
+  `.trim();
+
+  // 4. Transform decoder with OLD method (string→b64) so JS engine can read it
+  const transformedFull = transformAllStringsAndRegex(decoder);
+
+  // Extract runtime (it gets prepended by transformAllStringsAndRegex)
+
+  const runtimePrefix = RUNTIME_BASE64 + "\n";
+  let runtime = "";
+  let decoderCode = transformedFull;
+  if (transformedFull.startsWith(runtimePrefix)) {
+    runtime = RUNTIME_BASE64;
+    decoderCode = transformedFull.slice(runtimePrefix.length);
+  }
+
+  // 5. Split chunks: half before decoder, half after (decoder in MIDDLE)
+  const half = Math.floor(chunks.length / 2);
+  const beforeChunks = chunks.slice(0, half).map((c) => `/*${customName}${c}/*^/*($break)*/`).join("\n");
+  const afterChunks = chunks.slice(half).map((c) => `/*${customName}${c}/*^/*($break)*/`).join("\n");
+
+  return getBanner() + runtime + beforeChunks + "\n\n" + decoderCode + "\n\n" + afterChunks;
+}
